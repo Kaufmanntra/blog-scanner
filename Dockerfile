@@ -24,6 +24,13 @@ COPY ./app ./app
 
 RUN uv sync --frozen
 
+# Run as a non-root user for defense-in-depth. The app writes to /code at
+# runtime (knowledge_base/, excluded.json), so the working dir must be owned
+# by the runtime user.
+RUN useradd --create-home --uid 1000 appuser \
+    && chown -R appuser:appuser /code
+USER appuser
+
 ARG COMMIT_SHA=""
 ENV COMMIT_SHA=${COMMIT_SHA}
 

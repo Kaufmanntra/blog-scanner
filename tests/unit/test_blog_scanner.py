@@ -13,8 +13,14 @@
 # limitations under the License.
 
 import unittest
+from unittest import mock
 
-from app.tools import _cosine_similarity, _slugify
+from app.tools import (
+    _cosine_similarity,
+    _is_safe_feed_url,
+    _parse_feed_xml,
+    _slugify,
+)
 
 
 class TestBlogScannerUtilities(unittest.TestCase):
@@ -41,3 +47,49 @@ class TestBlogScannerUtilities(unittest.TestCase):
 
         # Zero vector handling
         self.assertEqual(_cosine_similarity([0.0, 0.0], [1.0, 1.0]), 0.0)
+
+
+class TestFeedSecurity(unittest.TestCase):
+    def test_parse_feed_xml_accepts_normal_feed(self) -> None:
+        """A plain RSS document parses fine."""
+        xml = b"<rss><channel><item><title>Hi</title></item></channel></rss>"
+        root = _parse_feed_xml(xml)
+        self.assertEqual(root.find("channel/item/title").text, "Hi")
+
+    def test_parse_feed_xml_rejects_dtd(self) -> None:
+        """Documents declaring a DTD/entities (billion-laughs vector) are rejected."""
+        billion_laughs = (
+            b'<?xml version="1.0"?>\n'
+            b"<!DOCTYPE lolz [\n"
+            b'  <!ENTITY lol "lol">\n'
+            b'  <!ENTITY lol2 "&lol;&lol;&lol;">\n'
+            b"]>\n"
+            b"<rss>&lol2;</rss>"
+        )
+        with self.assertRaises(ValueError):
+            _parse_feed_xml(billion_laughs)
+
+    def test_is_safe_feed_url_rejects_non_http_schemes(self) -> None:
+        self.assertFalse(_is_safe_feed_url("file:///etc/passwd"))
+        self.assertFalse(_is_safe_feed_url("ftp://example.com/feed"))
+        self.assertFalse(_is_safe_feed_url("not a url"))
+
+    def test_is_safe_feed_url_blocks_internal_hosts(self) -> None:
+        """Hosts resolving to private/metadata addresses are blocked (SSRF)."""
+        with mock.patch(
+            "app.tools.socket.getaddrinfo",
+            return_value=[(2, 1, 6, "", ("169.254.169.254", 0))],
+        ):
+            self.assertFalse(_is_safe_feed_url("http://metadata.internal/feed"))
+        with mock.patch(
+            "app.tools.socket.getaddrinfo",
+            return_value=[(2, 1, 6, "", ("127.0.0.1", 0))],
+        ):
+            self.assertFalse(_is_safe_feed_url("http://localhost/feed"))
+
+    def test_is_safe_feed_url_allows_public_hosts(self) -> None:
+        with mock.patch(
+            "app.tools.socket.getaddrinfo",
+            return_value=[(2, 1, 6, "", ("93.184.216.34", 0))],
+        ):
+            self.assertTrue(_is_safe_feed_url("https://blog.google/feed/"))
