@@ -1,0 +1,21 @@
+{
+  "blogs": [
+    {
+      "name": "Google Research Blog",
+      "url": "https://blog.google/technology/research/rss/"
+    },
+    {
+      "name": "Meta Research Blog",
+      "url": "https://research.facebook.com/feed/"
+    },
+    {
+      "name": "Netflix Tech Blog",
+      "url": "https://netflixtechblog.com/feed"
+    },
+    {
+      "name": "AWS Machine Learning Blog",
+      "url": "https://aws.amazon.com/blogs/machine-learning/feed/"
+    }
+  ],
+  "knowledge_base_dir": "knowledge_base"
+}
