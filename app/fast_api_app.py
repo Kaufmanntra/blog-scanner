@@ -164,8 +164,9 @@ def include_article(payload: dict) -> dict:
         )
         extensive_summary = response.text.strip()
     except Exception as e:
+        logger.log_text(f"Failed to generate summary: {e}", severity="ERROR")
         raise HTTPException(
-            status_code=500, detail=f"Failed to generate summary: {e}"
+            status_code=500, detail="Failed to generate summary"
         ) from e
 
     # Find similar articles
@@ -311,8 +312,9 @@ def query_knowledge_base(payload: dict) -> dict:
         )
         answer = response.text.strip()
     except Exception as e:
+        logger.log_text(f"Failed to generate answer: {e}", severity="ERROR")
         raise HTTPException(
-            status_code=500, detail=f"Failed to generate answer: {e}"
+            status_code=500, detail="Failed to generate answer"
         ) from e
 
     sources = [{"title": m["title"], "file_path": m["file_path"]} for m in top_matches]
@@ -404,8 +406,9 @@ def delete_article(filename: str) -> dict:
     try:
         os.remove(filepath)
     except Exception as e:
+        logger.log_text(f"Failed to delete file: {e}", severity="ERROR")
         raise HTTPException(
-            status_code=500, detail=f"Failed to delete file: {e}"
+            status_code=500, detail="Failed to delete file"
         ) from e
 
     # Try deleting cached embedding

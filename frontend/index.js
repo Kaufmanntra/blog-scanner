@@ -1,3 +1,26 @@
+// Only allow same-origin absolute paths or http(s) URLs as link targets.
+// Blocks javascript:, data:, and other dangerous schemes from untrusted
+// feed/LLM content that ends up in href attributes.
+function sanitizeUrl(url) {
+    if (typeof url !== "string") return "#";
+    const trimmed = url.trim();
+    if (trimmed.startsWith("/")) return trimmed;
+    if (/^https?:\/\//i.test(trimmed)) return trimmed;
+    return "#";
+}
+
+// Helper to build an anchor without ever using innerHTML.
+function createLink(href, text, { external = false } = {}) {
+    const a = document.createElement("a");
+    a.href = sanitizeUrl(href);
+    a.textContent = text;
+    if (external) {
+        a.target = "_blank";
+        a.rel = "noopener noreferrer";
+    }
+    return a;
+}
+
 document.addEventListener("DOMContentLoaded", () => {
     // Tab Elements
     const tabBtnScanner = document.getElementById("tab-btn-scanner");
@@ -146,18 +169,21 @@ document.addEventListener("DOMContentLoaded", () => {
             // Header
             const header = document.createElement("div");
             header.className = "card-header";
-            header.innerHTML = `
-                <span class="blog-tag">${article.blog_name}</span>
-            `;
-            
+            const blogTag = document.createElement("span");
+            blogTag.className = "blog-tag";
+            blogTag.textContent = article.blog_name;
+            header.appendChild(blogTag);
+
             // Title
             const title = document.createElement("h2");
-            title.innerHTML = `<a href="${article.url}" target="_blank" rel="noopener noreferrer">${article.title}</a>`;
-            
+            title.appendChild(createLink(article.url, article.title, { external: true }));
+
             // Body (Short summary)
             const body = document.createElement("div");
             body.className = "card-body";
-            body.innerHTML = `<p>${article.short_summary}</p>`;
+            const bodyP = document.createElement("p");
+            bodyP.textContent = article.short_summary;
+            body.appendChild(bodyP);
             
             // Footer (Actions)
             const footer = document.createElement("div");
@@ -234,23 +260,38 @@ document.addEventListener("DOMContentLoaded", () => {
             
             if (data.status === "success") {
                 const footer = card.querySelector(".card-footer");
-                
+                footer.replaceChildren();
+
+                const info = document.createElement("div");
+                info.className = "save-success-info";
+
+                const savedSpan = document.createElement("span");
+                savedSpan.append("✓ Saved successfully to: ");
+                const savedLink = createLink(`/${data.file_path}`, "", { external: true });
+                const code = document.createElement("code");
+                code.textContent = data.file_path;
+                savedLink.appendChild(code);
+                savedSpan.appendChild(savedLink);
+                info.appendChild(savedSpan);
+
                 // Construct similar articles list
-                let similarHtml = "";
                 if (data.similar_articles && data.similar_articles.length > 0) {
-                    similarHtml = "<br><strong>Similar articles linked:</strong><ul>";
+                    info.appendChild(document.createElement("br"));
+                    const strong = document.createElement("strong");
+                    strong.textContent = "Similar articles linked:";
+                    info.appendChild(strong);
+
+                    const ul = document.createElement("ul");
                     data.similar_articles.forEach(sim => {
-                        similarHtml += `<li><a href="/${sim.file_path}" target="_blank">${sim.title}</a> (Similarity: ${(sim.similarity).toFixed(2)})</li>`;
+                        const li = document.createElement("li");
+                        li.appendChild(createLink(`/${sim.file_path}`, sim.title, { external: true }));
+                        li.append(` (Similarity: ${Number(sim.similarity).toFixed(2)})`);
+                        ul.appendChild(li);
                     });
-                    similarHtml += "</ul>";
+                    info.appendChild(ul);
                 }
-                
-                footer.innerHTML = `
-                    <div class="save-success-info">
-                        <span>✓ Saved successfully to: <a href="/${data.file_path}" target="_blank"><code>${data.file_path}</code></a></span>
-                        ${similarHtml}
-                    </div>
-                `;
+
+                footer.appendChild(info);
             } else {
                 btnInclude.disabled = false;
                 btnExclude.disabled = false;
@@ -305,14 +346,19 @@ document.addEventListener("DOMContentLoaded", () => {
                 if (data.sources && data.sources.length > 0) {
                     const sourcesDiv = document.createElement("div");
                     sourcesDiv.className = "sources-list";
-                    
-                    let sourcesHtml = "<strong>Sources:</strong><ul>";
+
+                    const strong = document.createElement("strong");
+                    strong.textContent = "Sources:";
+                    sourcesDiv.appendChild(strong);
+
+                    const ul = document.createElement("ul");
                     data.sources.forEach(src => {
-                        sourcesHtml += `<li><a href="/${src.file_path}" target="_blank">${src.title}</a></li>`;
+                        const li = document.createElement("li");
+                        li.appendChild(createLink(`/${src.file_path}`, src.title, { external: true }));
+                        ul.appendChild(li);
                     });
-                    sourcesHtml += "</ul>";
-                    
-                    sourcesDiv.innerHTML = sourcesHtml;
+                    sourcesDiv.appendChild(ul);
+
                     botBubble.appendChild(sourcesDiv);
                 }
             } else {
@@ -394,21 +440,30 @@ document.addEventListener("DOMContentLoaded", () => {
             else if (art.url.includes("netflixtechblog")) label = "Netflix Tech";
             else if (art.url.includes("aws.amazon")) label = "AWS ML";
 
-            header.innerHTML = `<span class="blog-tag">${label}</span>`;
+            const blogTag = document.createElement("span");
+            blogTag.className = "blog-tag";
+            blogTag.textContent = label;
+            header.appendChild(blogTag);
 
             // Title
             const title = document.createElement("h2");
-            title.innerHTML = `<a href="/knowledge_base/${art.filename}" target="_blank">${art.title}</a>`;
+            title.appendChild(
+                createLink(`/knowledge_base/${encodeURIComponent(art.filename)}`, art.title, { external: true })
+            );
 
             // Body
             const body = document.createElement("div");
             body.className = "card-body";
-            body.innerHTML = `
-                <p>
-                    <strong>Date Summarized:</strong> ${art.date || "Unknown"}<br>
-                    <strong>Source URL:</strong> <a href="${art.url}" target="_blank" rel="noopener noreferrer">${art.url || "N/A"}</a>
-                </p>
-            `;
+            const bodyP = document.createElement("p");
+            const dateStrong = document.createElement("strong");
+            dateStrong.textContent = "Date Summarized:";
+            bodyP.append(dateStrong, ` ${art.date || "Unknown"}`);
+            bodyP.appendChild(document.createElement("br"));
+            const urlStrong = document.createElement("strong");
+            urlStrong.textContent = "Source URL:";
+            bodyP.append(urlStrong, " ");
+            bodyP.appendChild(createLink(art.url, art.url || "N/A", { external: true }));
+            body.appendChild(bodyP);
 
             // Footer
             const footer = document.createElement("div");
@@ -421,7 +476,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
             const btnOpen = document.createElement("a");
             btnOpen.className = "btn btn-primary";
-            btnOpen.href = `/knowledge_base/${art.filename}`;
+            btnOpen.href = `/knowledge_base/${encodeURIComponent(art.filename)}`;
             btnOpen.target = "_blank";
             btnOpen.textContent = "Open Summary";
 

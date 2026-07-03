@@ -12,19 +12,78 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import ipaddress
 import json
 import math
 import os
 import re
+import socket
 import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime
+from urllib.parse import urlparse
 
 from google import genai
 from google.adk.tools import ToolContext
 
 # Directory where similar articles are stored
 KNOWLEDGE_BASE_DIR = "knowledge_base"
+
+# Cap the size of a fetched feed to avoid unbounded-memory DoS from a
+# malicious/compromised feed endpoint.
+MAX_FEED_BYTES = 10 * 1024 * 1024  # 10 MiB
+
+
+def _is_safe_feed_url(url: str) -> bool:
+    """Return True only for http(s) URLs that don't resolve to internal hosts.
+
+    Feeds are fetched server-side, so a tampered config could otherwise be used
+    to reach cloud metadata endpoints or internal services (SSRF). We require an
+    http(s) scheme and reject any host that resolves to a private, loopback,
+    link-local, reserved, or otherwise non-public address.
+    """
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return False
+
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        return False
+
+    try:
+        addr_infos = socket.getaddrinfo(parsed.hostname, None)
+    except Exception:
+        return False
+
+    for info in addr_infos:
+        try:
+            ip = ipaddress.ip_address(info[4][0])
+        except ValueError:
+            return False
+        if (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_reserved
+            or ip.is_multicast
+            or ip.is_unspecified
+        ):
+            return False
+    return True
+
+
+def _parse_feed_xml(xml_data: bytes) -> ET.Element:
+    """Parse feed XML while refusing DTDs to prevent entity-expansion DoS.
+
+    ElementTree does not resolve external entities, but internal entity
+    definitions in a DTD still enable the "billion laughs" quadratic-blowup
+    attack. Feeds are untrusted third-party content, so we reject any document
+    that declares a DOCTYPE/DTD before parsing.
+    """
+    head = xml_data[:8192].lstrip().lstrip(b"\xef\xbb\xbf").lower()
+    if b"<!doctype" in head or b"<!entity" in head:
+        raise ValueError("XML DTD/entity declarations are not allowed in feeds")
+    return ET.fromstring(xml_data)
 
 
 def _slugify(text: str) -> str:
@@ -127,6 +186,10 @@ def scrape_blog_feeds(tool_context: ToolContext) -> dict:
         print(f"Scanning {blog_name} feed...")
 
         try:
+            if not _is_safe_feed_url(feed_url):
+                print(f"Skipping {blog_name}: unsafe or non-public feed URL")
+                continue
+
             req = urllib.request.Request(
                 feed_url,
                 headers={
@@ -134,9 +197,13 @@ def scrape_blog_feeds(tool_context: ToolContext) -> dict:
                 },
             )
             with urllib.request.urlopen(req, timeout=10) as response:
-                xml_data = response.read()
+                # Read at most MAX_FEED_BYTES + 1 so we can detect overflow.
+                xml_data = response.read(MAX_FEED_BYTES + 1)
+                if len(xml_data) > MAX_FEED_BYTES:
+                    print(f"Skipping {blog_name}: feed exceeds size limit")
+                    continue
 
-            root = ET.fromstring(xml_data)
+            root = _parse_feed_xml(xml_data)
 
             # Detect and parse items
             items_found = []
