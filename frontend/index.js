@@ -78,6 +78,36 @@ document.addEventListener("DOMContentLoaded", () => {
         loadSavedArticles();
     });
 
+    // Scan results persistence (survives page reloads within the browser tab).
+    // Each entry: { article, saved } where `saved` is null or the include
+    // response ({ file_path, similar_articles }). Excluded articles are dropped.
+    const SCAN_STORAGE_KEY = "blogScanner.scanResults";
+    let scanEntries = [];
+
+    function persistScan() {
+        try {
+            sessionStorage.setItem(SCAN_STORAGE_KEY, JSON.stringify(scanEntries));
+        } catch (error) {
+            console.warn("Could not persist scan results:", error);
+        }
+    }
+
+    function restoreScan() {
+        try {
+            const parsed = JSON.parse(sessionStorage.getItem(SCAN_STORAGE_KEY));
+            if (!Array.isArray(parsed)) return;
+            scanEntries = parsed.filter(e => e && typeof e.article === "object" && e.article);
+        } catch (error) {
+            console.warn("Could not restore scan results:", error);
+            scanEntries = [];
+        }
+        if (scanEntries.length > 0) {
+            renderArticles();
+            emptyState.classList.add("hidden");
+            articlesGrid.classList.remove("hidden");
+        }
+    }
+
     // Initialize Page
     async function init() {
         try {
@@ -139,10 +169,15 @@ document.addEventListener("DOMContentLoaded", () => {
             loadingState.classList.add("hidden");
             
             if (data.new_articles && data.new_articles.length > 0) {
-                renderArticles(data.new_articles);
+                scanEntries = data.new_articles.map(article => ({ article, saved: null }));
+                persistScan();
+                renderArticles();
                 articlesGrid.classList.remove("hidden");
                 showStatus(`Scan complete. Found ${data.new_articles.length} new articles.`, "success");
             } else {
+                scanEntries = [];
+                persistScan();
+                articlesGrid.innerHTML = "";
                 emptyState.classList.remove("hidden");
                 showStatus("Scan complete. No new articles found.", "info");
             }
@@ -158,10 +193,11 @@ document.addEventListener("DOMContentLoaded", () => {
     });
 
     // Render Articles Grid
-    function renderArticles(articles) {
+    function renderArticles() {
         articlesGrid.innerHTML = "";
-        
-        articles.forEach((article, index) => {
+
+        scanEntries.forEach((entry, index) => {
+            const article = entry.article;
             const card = document.createElement("article");
             card.className = "article-card";
             card.id = `card-${index}`;
@@ -188,20 +224,24 @@ document.addEventListener("DOMContentLoaded", () => {
             // Footer (Actions)
             const footer = document.createElement("div");
             footer.className = "card-footer";
-            
-            const btnExclude = document.createElement("button");
-            btnExclude.className = "btn btn-secondary btn-danger-outline";
-            btnExclude.textContent = "Exclude";
-            btnExclude.addEventListener("click", () => handleExclude(article, card));
-            
-            const btnInclude = document.createElement("button");
-            btnInclude.className = "btn btn-primary btn-success";
-            btnInclude.textContent = "Include";
-            btnInclude.addEventListener("click", () => handleInclude(article, card, btnInclude, btnExclude));
-            
-            footer.appendChild(btnExclude);
-            footer.appendChild(btnInclude);
-            
+
+            if (entry.saved) {
+                renderSaveInfo(footer, entry.saved);
+            } else {
+                const btnExclude = document.createElement("button");
+                btnExclude.className = "btn btn-secondary btn-danger-outline";
+                btnExclude.textContent = "Exclude";
+                btnExclude.addEventListener("click", () => handleExclude(entry, card));
+
+                const btnInclude = document.createElement("button");
+                btnInclude.className = "btn btn-primary btn-success";
+                btnInclude.textContent = "Include";
+                btnInclude.addEventListener("click", () => handleInclude(entry, card, btnInclude, btnExclude));
+
+                footer.appendChild(btnExclude);
+                footer.appendChild(btnInclude);
+            }
+
             card.appendChild(header);
             card.appendChild(title);
             card.appendChild(body);
@@ -212,7 +252,8 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     // Exclude Article
-    async function handleExclude(article, card) {
+    async function handleExclude(entry, card) {
+        const article = entry.article;
         try {
             const res = await fetch("/api/exclude", {
                 method: "POST",
@@ -220,8 +261,10 @@ document.addEventListener("DOMContentLoaded", () => {
                 body: JSON.stringify({ title: article.title })
             });
             const data = await res.json();
-            
+
             if (data.status === "success") {
+                scanEntries = scanEntries.filter(e => e !== entry);
+                persistScan();
                 // Add fade-out transition
                 card.classList.add("removed");
                 setTimeout(() => {
@@ -240,7 +283,44 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     // Include/Save Article
-    async function handleInclude(article, card, btnInclude, btnExclude) {
+    // Render the "saved" info (file link + similar articles) into a card footer
+    function renderSaveInfo(footer, saved) {
+        footer.replaceChildren();
+
+        const info = document.createElement("div");
+        info.className = "save-success-info";
+
+        const savedSpan = document.createElement("span");
+        savedSpan.append("✓ Saved successfully to: ");
+        const savedLink = createLink(`/${saved.file_path}`, "", { external: true });
+        const code = document.createElement("code");
+        code.textContent = saved.file_path;
+        savedLink.appendChild(code);
+        savedSpan.appendChild(savedLink);
+        info.appendChild(savedSpan);
+
+        // Construct similar articles list
+        if (Array.isArray(saved.similar_articles) && saved.similar_articles.length > 0) {
+            info.appendChild(document.createElement("br"));
+            const strong = document.createElement("strong");
+            strong.textContent = "Similar articles linked:";
+            info.appendChild(strong);
+
+            const ul = document.createElement("ul");
+            saved.similar_articles.forEach(sim => {
+                const li = document.createElement("li");
+                li.appendChild(createLink(`/${sim.file_path}`, sim.title, { external: true }));
+                li.append(` (Similarity: ${Number(sim.similarity).toFixed(2)})`);
+                ul.appendChild(li);
+            });
+            info.appendChild(ul);
+        }
+
+        footer.appendChild(info);
+    }
+
+    async function handleInclude(entry, card, btnInclude, btnExclude) {
+        const article = entry.article;
         // Disable actions during save
         btnInclude.disabled = true;
         btnExclude.disabled = true;
@@ -259,39 +339,12 @@ document.addEventListener("DOMContentLoaded", () => {
             const data = await res.json();
             
             if (data.status === "success") {
-                const footer = card.querySelector(".card-footer");
-                footer.replaceChildren();
-
-                const info = document.createElement("div");
-                info.className = "save-success-info";
-
-                const savedSpan = document.createElement("span");
-                savedSpan.append("✓ Saved successfully to: ");
-                const savedLink = createLink(`/${data.file_path}`, "", { external: true });
-                const code = document.createElement("code");
-                code.textContent = data.file_path;
-                savedLink.appendChild(code);
-                savedSpan.appendChild(savedLink);
-                info.appendChild(savedSpan);
-
-                // Construct similar articles list
-                if (data.similar_articles && data.similar_articles.length > 0) {
-                    info.appendChild(document.createElement("br"));
-                    const strong = document.createElement("strong");
-                    strong.textContent = "Similar articles linked:";
-                    info.appendChild(strong);
-
-                    const ul = document.createElement("ul");
-                    data.similar_articles.forEach(sim => {
-                        const li = document.createElement("li");
-                        li.appendChild(createLink(`/${sim.file_path}`, sim.title, { external: true }));
-                        li.append(` (Similarity: ${Number(sim.similarity).toFixed(2)})`);
-                        ul.appendChild(li);
-                    });
-                    info.appendChild(ul);
-                }
-
-                footer.appendChild(info);
+                entry.saved = {
+                    file_path: data.file_path,
+                    similar_articles: data.similar_articles || []
+                };
+                persistScan();
+                renderSaveInfo(card.querySelector(".card-footer"), entry.saved);
             } else {
                 btnInclude.disabled = false;
                 btnExclude.disabled = false;
@@ -423,8 +476,6 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     function renderSavedArticles(articles) {
-        articlesGrid.innerHTML = ""; // Clear main grid too just in case
-
         articles.forEach((art, index) => {
             const card = document.createElement("article");
             card.className = "article-card";
@@ -523,5 +574,6 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     // Run Initialization
+    restoreScan();
     init();
 });
