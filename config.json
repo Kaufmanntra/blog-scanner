@@ -15,6 +15,10 @@
     {
       "name": "AWS Machine Learning Blog",
       "url": "https://aws.amazon.com/blogs/machine-learning/feed/"
+    },
+    {
+      "name": "Modern Data 101",
+      "url": "https://moderndata101.substack.com/feed"
     }
   ],
   "knowledge_base_dir": "knowledge_base"

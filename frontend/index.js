@@ -116,23 +116,120 @@ document.addEventListener("DOMContentLoaded", () => {
             
             // Render Active Project ID
             projectId.textContent = data.project_id || "None";
-            
-            // Render Blogs List
-            if (data.blogs && data.blogs.length > 0) {
-                blogList.innerHTML = "";
-                data.blogs.forEach(blog => {
-                    const li = document.createElement("li");
-                    li.className = "blog-item";
-                    li.textContent = blog.name;
-                    blogList.appendChild(li);
-                });
-            } else {
-                blogList.innerHTML = '<li class="loading-item">No blogs configured</li>';
-            }
+
+            renderBlogList(data.blogs || []);
         } catch (error) {
             console.error("Initialization error:", error);
             projectId.textContent = "Error";
             blogList.innerHTML = '<li class="loading-item">Error loading feeds</li>';
+        }
+    }
+
+    // Sources (blog feeds) management
+    const addSourceForm = document.getElementById("add-source-form");
+    const sourceUrlInput = document.getElementById("source-url");
+    const sourceNameInput = document.getElementById("source-name");
+    const btnAddSource = document.getElementById("btn-add-source");
+    const addSourceMessage = document.getElementById("add-source-message");
+
+    function renderBlogList(blogs) {
+        blogList.replaceChildren();
+        if (blogs.length === 0) {
+            const li = document.createElement("li");
+            li.className = "loading-item";
+            li.textContent = "No blogs configured";
+            blogList.appendChild(li);
+            return;
+        }
+        blogs.forEach(blog => {
+            const li = document.createElement("li");
+            li.className = "blog-item";
+            li.title = blog.url;
+
+            const name = document.createElement("span");
+            name.className = "blog-item-name";
+            name.textContent = blog.name;
+
+            const btnRemove = document.createElement("button");
+            btnRemove.type = "button";
+            btnRemove.className = "btn-remove-source";
+            btnRemove.textContent = "×";
+            btnRemove.setAttribute("aria-label", `Remove ${blog.name}`);
+            btnRemove.addEventListener("click", () => handleRemoveSource(blog, btnRemove));
+
+            li.append(name, btnRemove);
+            blogList.appendChild(li);
+        });
+    }
+
+    async function reloadBlogList() {
+        const res = await fetch("/api/blogs");
+        const data = await res.json();
+        renderBlogList(data.blogs || []);
+    }
+
+    function showSourceMessage(message, type) {
+        addSourceMessage.textContent = message;
+        addSourceMessage.className = `add-source-message ${type}`;
+    }
+
+    addSourceForm.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const url = sourceUrlInput.value.trim();
+        if (!url) return;
+
+        btnAddSource.disabled = true;
+        btnAddSource.querySelector("span").textContent = "Checking feed...";
+        addSourceMessage.classList.add("hidden");
+
+        try {
+            const res = await fetch("/api/blogs", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ url, name: sourceNameInput.value.trim() })
+            });
+            const data = await res.json();
+
+            if (res.ok && data.status === "success") {
+                sourceUrlInput.value = "";
+                sourceNameInput.value = "";
+                showSourceMessage(`Added "${data.blog.name}" (${data.item_count} articles in feed).`, "success");
+                await reloadBlogList();
+            } else {
+                showSourceMessage(data.detail || "Failed to add source.", "error");
+            }
+        } catch (error) {
+            console.error("Add source error:", error);
+            showSourceMessage("Connection error while adding source.", "error");
+        } finally {
+            btnAddSource.disabled = false;
+            btnAddSource.querySelector("span").textContent = "+ Add Source";
+        }
+    });
+
+    async function handleRemoveSource(blog, btnRemove) {
+        if (!confirm(`Remove source "${blog.name}"?`)) return;
+
+        btnRemove.disabled = true;
+        try {
+            const res = await fetch("/api/blogs", {
+                method: "DELETE",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ url: blog.url })
+            });
+            const data = await res.json();
+
+            if (res.ok && data.status === "success") {
+                showSourceMessage(`Removed "${blog.name}".`, "success");
+                await reloadBlogList();
+            } else {
+                btnRemove.disabled = false;
+                showSourceMessage(data.detail || "Failed to remove source.", "error");
+            }
+        } catch (error) {
+            console.error("Remove source error:", error);
+            btnRemove.disabled = false;
+            showSourceMessage("Connection error while removing source.", "error");
         }
     }
 

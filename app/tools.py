@@ -18,10 +18,12 @@ import math
 import os
 import re
 import socket
+import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime
-from urllib.parse import urlparse
+from html.parser import HTMLParser
+from urllib.parse import urljoin, urlparse
 
 from google import genai
 from google.adk.tools import ToolContext
@@ -80,10 +82,174 @@ def _parse_feed_xml(xml_data: bytes) -> ET.Element:
     attack. Feeds are untrusted third-party content, so we reject any document
     that declares a DOCTYPE/DTD before parsing.
     """
-    head = xml_data[:8192].lstrip().lstrip(b"\xef\xbb\xbf").lower()
-    if b"<!doctype" in head or b"<!entity" in head:
+    # A DTD may only appear in the prolog, before the root element. Only the
+    # prolog is checked, so "<!DOCTYPE" inside article HTML (CDATA) is fine.
+    prolog = _XML_PROLOG_RE.match(xml_data)
+    rest = xml_data[prolog.end() if prolog else 0 :]
+    if rest[:9].lower() == b"<!doctype":
         raise ValueError("XML DTD/entity declarations are not allowed in feeds")
     return ET.fromstring(xml_data)
+
+
+# BOM, whitespace, XML declaration, processing instructions and comments that
+# may precede a DOCTYPE or the root element.
+_XML_PROLOG_RE = re.compile(rb"(?:\xef\xbb\xbf|\s+|<\?.*?\?>|<!--.*?-->)*", re.DOTALL)
+
+
+class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Re-validate every redirect target so a public URL can't bounce to an
+    internal host (SSRF via redirect)."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not _is_safe_feed_url(newurl):
+            raise urllib.error.URLError("Redirect to unsafe URL blocked")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_url_opener = urllib.request.build_opener(_SafeRedirectHandler)
+
+
+def _fetch_url(url: str, timeout: int = 10) -> bytes:
+    """Fetch a public http(s) URL with SSRF and size protections.
+
+    Raises ValueError for unsafe URLs or oversized responses.
+    """
+    if not _is_safe_feed_url(url):
+        raise ValueError("Unsafe or non-public URL")
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        },
+    )
+    with _url_opener.open(req, timeout=timeout) as response:
+        # Read at most MAX_FEED_BYTES + 1 so we can detect overflow.
+        data = response.read(MAX_FEED_BYTES + 1)
+    if len(data) > MAX_FEED_BYTES:
+        raise ValueError("Response exceeds size limit")
+    return data
+
+
+def _node_text(node: ET.Element | None) -> str:
+    return node.text.strip() if node is not None and node.text else ""
+
+
+def _extract_feed_items(root: ET.Element) -> list[dict]:
+    """Return [{title, url, summary}] from a parsed RSS or Atom document."""
+    items_found = []
+
+    # RSS format
+    channel = root.find("channel")
+    if channel is not None:
+        for item in channel.findall("item"):
+            title = _node_text(item.find("title"))
+            link = _node_text(item.find("link"))
+            desc = _node_text(item.find("description"))
+            if title and link:
+                items_found.append({"title": title, "url": link, "summary": desc})
+        return items_found
+
+    # Atom format
+    for entry in root.findall(".//{*}entry"):
+        title = _node_text(entry.find("{*}title"))
+
+        link = ""
+        link_node = entry.find("{*}link")
+        if link_node is not None:
+            link = link_node.attrib.get("href", "").strip() or _node_text(link_node)
+
+        # Note: explicit None check — an Element without children is falsy.
+        summary_node = entry.find("{*}summary")
+        if summary_node is None:
+            summary_node = entry.find("{*}content")
+        desc = _node_text(summary_node)
+
+        if title and link:
+            items_found.append({"title": title, "url": link, "summary": desc})
+    return items_found
+
+
+def _feed_title(root: ET.Element) -> str:
+    """Return the feed's own title (RSS channel title or Atom feed title)."""
+    channel = root.find("channel")
+    if channel is not None:
+        return _node_text(channel.find("title"))
+    return _node_text(root.find("{*}title"))
+
+
+def _try_parse_feed(data: bytes) -> ET.Element | None:
+    """Parse data as a feed; return the root only if it is RSS or Atom."""
+    try:
+        root = _parse_feed_xml(data)
+    except Exception:
+        return None
+    tag = root.tag.rsplit("}", 1)[-1].lower()
+    if tag in ("rss", "feed", "rdf"):
+        return root
+    return None
+
+
+class _FeedLinkParser(HTMLParser):
+    """Collect <link rel="alternate" type="application/rss+xml|atom+xml">."""
+
+    FEED_TYPES = ("application/rss+xml", "application/atom+xml")
+
+    def __init__(self):
+        super().__init__()
+        self.hrefs: list[str] = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag != "link":
+            return
+        a = {k.lower(): (v or "") for k, v in attrs}
+        rel = a.get("rel", "").lower().split()
+        if "alternate" in rel and a.get("type", "").lower() in self.FEED_TYPES:
+            if a.get("href"):
+                self.hrefs.append(a["href"])
+
+
+# Common feed locations tried when a site doesn't advertise its feed.
+_COMMON_FEED_PATHS = ("/feed", "/rss", "/rss.xml", "/feed.xml", "/atom.xml")
+
+
+def discover_feed(url: str) -> tuple[str, ET.Element]:
+    """Resolve a URL to a working RSS/Atom feed.
+
+    Accepts either a direct feed URL or a website URL. For websites, looks for
+    advertised feed <link> tags, then tries a few common feed paths.
+    Returns (feed_url, parsed_root). Raises ValueError if no feed is found.
+    """
+    data = _fetch_url(url)
+    root = _try_parse_feed(data)
+    if root is not None:
+        return url, root
+
+    parser = _FeedLinkParser()
+    try:
+        parser.feed(data.decode("utf-8", errors="replace"))
+    except Exception:
+        pass
+    # Sites often advertise a comments feed first; try article feeds before it.
+    advertised = sorted(
+        (urljoin(url, href) for href in parser.hrefs),
+        key=lambda u: "comments" in u.lower(),
+    )
+    candidates = advertised + [urljoin(url, path) for path in _COMMON_FEED_PATHS]
+
+    seen = {url}
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        try:
+            root = _try_parse_feed(_fetch_url(candidate))
+        except Exception:
+            continue
+        # Only accept a discovered feed that actually contains articles.
+        if root is not None and _extract_feed_items(root):
+            return candidate, root
+
+    raise ValueError("No RSS/Atom feed found at this URL")
 
 
 def _slugify(text: str) -> str:
@@ -186,87 +352,14 @@ def scrape_blog_feeds(tool_context: ToolContext) -> dict:
         print(f"Scanning {blog_name} feed...")
 
         try:
-            if not _is_safe_feed_url(feed_url):
-                print(f"Skipping {blog_name}: unsafe or non-public feed URL")
+            try:
+                xml_data = _fetch_url(feed_url)
+            except ValueError as e:
+                print(f"Skipping {blog_name}: {e}")
                 continue
 
-            req = urllib.request.Request(
-                feed_url,
-                headers={
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-                },
-            )
-            with urllib.request.urlopen(req, timeout=10) as response:
-                # Read at most MAX_FEED_BYTES + 1 so we can detect overflow.
-                xml_data = response.read(MAX_FEED_BYTES + 1)
-                if len(xml_data) > MAX_FEED_BYTES:
-                    print(f"Skipping {blog_name}: feed exceeds size limit")
-                    continue
-
             root = _parse_feed_xml(xml_data)
-
-            # Detect and parse items
-            items_found = []
-
-            # Check RSS format
-            channel = root.find("channel")
-            if channel is not None:
-                for item in channel.findall("item"):
-                    title_node = item.find("title")
-                    link_node = item.find("link")
-                    desc_node = item.find("description")
-
-                    title = (
-                        title_node.text.strip()
-                        if title_node is not None and title_node.text
-                        else ""
-                    )
-                    link = (
-                        link_node.text.strip()
-                        if link_node is not None and link_node.text
-                        else ""
-                    )
-                    desc = (
-                        desc_node.text.strip()
-                        if desc_node is not None and desc_node.text
-                        else ""
-                    )
-
-                    if title and link:
-                        items_found.append(
-                            {"title": title, "url": link, "summary": desc}
-                        )
-
-            # Check Atom format
-            else:
-                entries = root.findall(".//{*}entry")
-                for entry in entries:
-                    title_node = entry.find("{*}title")
-                    link_node = entry.find("{*}link")
-                    summary_node = entry.find("{*}summary") or entry.find("{*}content")
-
-                    title = (
-                        title_node.text.strip()
-                        if title_node is not None and title_node.text
-                        else ""
-                    )
-
-                    link = ""
-                    if link_node is not None:
-                        link = link_node.attrib.get("href", "").strip()
-                        if not link:
-                            link = (link_node.text or "").strip()
-
-                    desc = (
-                        summary_node.text.strip()
-                        if summary_node is not None and summary_node.text
-                        else ""
-                    )
-
-                    if title and link:
-                        items_found.append(
-                            {"title": title, "url": link, "summary": desc}
-                        )
+            items_found = _extract_feed_items(root)
 
             # Process up to 3 latest new articles from this feed
             count = 0

@@ -57,6 +57,15 @@
                     <!-- Loaded dynamically -->
                     <li class="loading-item">Loading feeds...</li>
                 </ul>
+
+                <form class="add-source-form" id="add-source-form" autocomplete="off">
+                    <input type="text" id="source-url" placeholder="Feed or website URL" maxlength="2048" required>
+                    <input type="text" id="source-name" placeholder="Name (optional)" maxlength="100">
+                    <button type="submit" class="btn btn-secondary btn-small" id="btn-add-source">
+                        <span>+ Add Source</span>
+                    </button>
+                    <p class="add-source-message hidden" id="add-source-message"></p>
+                </form>
             </div>
 
             <div class="sidebar-footer">

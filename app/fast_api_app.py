@@ -14,6 +14,8 @@
 import json
 import os
 import re
+import threading
+from urllib.parse import urlparse
 
 import google.auth
 from fastapi import FastAPI, HTTPException
@@ -27,9 +29,12 @@ from app.app_utils.telemetry import setup_telemetry
 from app.app_utils.typing import Feedback
 from app.tools import (
     _cosine_similarity,
+    _extract_feed_items,
+    _feed_title,
     _get_document_embedding,
     _get_embedding,
     _slugify,
+    discover_feed,
     save_to_repository,
     scrape_blog_feeds,
     search_similar_articles,
@@ -47,6 +52,7 @@ allow_origins = (
 logs_bucket_name = os.environ.get("LOGS_BUCKET_NAME")
 
 AGENT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+CONFIG_PATH = "config.json"
 # In-memory session configuration - no persistent storage
 session_service_uri = None
 
@@ -108,6 +114,97 @@ def get_blogs() -> dict:
     with open(config_path) as f:
         config = json.load(f)
     return {"blogs": config.get("blogs", []), "project_id": project_id}
+
+
+# Serialises read-modify-write cycles on config.json across request threads.
+_config_lock = threading.Lock()
+MAX_BLOG_NAME_LENGTH = 100
+MAX_BLOG_URL_LENGTH = 2048
+
+
+def _load_config() -> dict:
+    if not os.path.exists(CONFIG_PATH):
+        return {"blogs": [], "knowledge_base_dir": "knowledge_base"}
+    with open(CONFIG_PATH) as f:
+        return json.load(f)
+
+
+def _write_config(config: dict) -> None:
+    """Atomically replace config.json so a crash can't leave it half-written."""
+    tmp_path = f"{CONFIG_PATH}.tmp"
+    with open(tmp_path, "w") as f:
+        json.dump(config, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+    os.replace(tmp_path, CONFIG_PATH)
+
+
+@app.post("/api/blogs")
+def add_blog(payload: dict) -> dict:
+    """Adds a new source. Accepts a feed URL or a website URL (feed is auto-discovered)."""
+    url = str(payload.get("url", "")).strip()
+    name = str(payload.get("name", "")).strip()
+
+    if not url:
+        raise HTTPException(status_code=400, detail="URL is required")
+    if len(url) > MAX_BLOG_URL_LENGTH or len(name) > MAX_BLOG_NAME_LENGTH:
+        raise HTTPException(status_code=400, detail="Name or URL is too long")
+    if not re.match(r"^https?://", url, re.IGNORECASE):
+        url = f"https://{url}"
+
+    try:
+        feed_url, root = discover_feed(url)
+    except Exception as e:
+        logger.log_text(f"Feed discovery failed for {url}: {e}", severity="WARNING")
+        raise HTTPException(
+            status_code=400,
+            detail="No valid RSS/Atom feed found at this URL. Try the direct feed URL.",
+        ) from e
+
+    item_count = len(_extract_feed_items(root))
+    if item_count == 0:
+        raise HTTPException(status_code=400, detail="The feed contains no articles")
+
+    if not name:
+        name = (_feed_title(root) or urlparse(feed_url).hostname or feed_url)[
+            :MAX_BLOG_NAME_LENGTH
+        ]
+
+    with _config_lock:
+        config = _load_config()
+        blogs = config.setdefault("blogs", [])
+        for blog in blogs:
+            if blog.get("url") == feed_url:
+                raise HTTPException(
+                    status_code=409, detail="This feed is already configured"
+                )
+            if blog.get("name", "").lower() == name.lower():
+                raise HTTPException(
+                    status_code=409, detail="A source with this name already exists"
+                )
+        new_blog = {"name": name, "url": feed_url}
+        blogs.append(new_blog)
+        _write_config(config)
+
+    return {"status": "success", "blog": new_blog, "item_count": item_count}
+
+
+@app.delete("/api/blogs")
+def delete_blog(payload: dict) -> dict:
+    """Removes a source identified by its feed URL."""
+    url = str(payload.get("url", "")).strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="URL is required")
+
+    with _config_lock:
+        config = _load_config()
+        blogs = config.get("blogs", [])
+        remaining = [b for b in blogs if b.get("url") != url]
+        if len(remaining) == len(blogs):
+            raise HTTPException(status_code=404, detail="Source not found")
+        config["blogs"] = remaining
+        _write_config(config)
+
+    return {"status": "success"}
 
 
 @app.post("/api/scan")
