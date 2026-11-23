@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import hashlib
 import ipaddress
 import json
 import math
@@ -48,6 +49,9 @@ def ensure_config() -> None:
 
 # Directory where similar articles are stored
 KNOWLEDGE_BASE_DIR = "knowledge_base"
+
+# Dimension of gemini-embedding-2 vectors.
+EMBEDDING_DIM = 3072
 
 # Cap the size of a fetched feed to avoid unbounded-memory DoS from a
 # malicious/compromised feed endpoint.
@@ -289,38 +293,57 @@ def _get_embedding(client: genai.Client, text: str) -> list[float]:
     except Exception as e:
         print(f"Error fetching embedding: {e}")
         # Return a zero vector as fallback
-        return [0.0] * 3072
+        return [0.0] * EMBEDDING_DIM
 
 
 def _get_document_embedding(
     client: genai.Client, kb_dir: str, filename: str, content: str
 ) -> list[float]:
-    """Retrieves document embedding from cache or computes it and saves it."""
+    """Retrieves document embedding from cache or computes it and saves it.
+
+    The cache entry is keyed by a hash of the embedded text, so an article
+    whose file was overwritten gets a fresh embedding instead of a stale one.
+    """
     embeddings_dir = os.path.join(kb_dir, ".embeddings")
     os.makedirs(embeddings_dir, exist_ok=True)
 
     slug = os.path.splitext(filename)[0]
     cache_path = os.path.join(embeddings_dir, f"{slug}.json")
 
+    # Only the first 1500 chars are embedded, so that is what the hash covers.
+    text = content[:1500]
+    content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
+
     if os.path.exists(cache_path):
         try:
             with open(cache_path) as f:
                 data = json.load(f)
-                # Check if it has 'embedding' key and it is of expected dimension (3072)
-                if "embedding" in data and len(data["embedding"]) == 3072:
-                    return data["embedding"]
+            cached = data.get("embedding")
+            if (
+                data.get("content_hash") == content_hash
+                and isinstance(cached, list)
+                and len(cached) == EMBEDDING_DIM
+            ):
+                return cached
         except Exception:
             pass
 
-    # Not cached or cache corrupted, compute new one
-    # Use content up to 1500 chars to match previous behavior
-    emb = _get_embedding(client, content[:1500])
+    # Not cached, stale, or corrupted: compute a new one.
+    emb = _get_embedding(client, text)
 
-    # Save to cache
-    if emb and len(emb) == 3072:
+    # Don't cache the zero-vector fallback from a failed API call, otherwise
+    # the article would stay unfindable until the cache file is deleted.
+    if len(emb) == EMBEDDING_DIM and any(emb):
         try:
             with open(cache_path, "w") as f:
-                json.dump({"filename": filename, "embedding": emb}, f)
+                json.dump(
+                    {
+                        "filename": filename,
+                        "content_hash": content_hash,
+                        "embedding": emb,
+                    },
+                    f,
+                )
         except Exception as e:
             print(f"Failed to write embedding cache: {e}")
 

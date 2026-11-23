@@ -244,3 +244,56 @@ class TestEnsureConfig(unittest.TestCase):
                 tools.ensure_config()
             with open(target) as f:
                 self.assertEqual(f.read(), "custom")
+
+
+class TestDocumentEmbeddingCache(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+
+        self._tmp = tempfile.TemporaryDirectory()
+        self.kb_dir = self._tmp.name
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _get(self, content, vector):
+        from app import tools
+
+        with mock.patch.object(tools, "_get_embedding", return_value=vector) as m:
+            result = tools._get_document_embedding(
+                None, self.kb_dir, "article.md", content
+            )
+        return result, m.call_count
+
+    def test_reuses_cache_for_unchanged_content(self):
+        vec = [0.1] * 3072
+        self._get("# A\nbody", vec)
+        result, calls = self._get("# A\nbody", [0.9] * 3072)
+        self.assertEqual(result, vec)
+        self.assertEqual(calls, 0)
+
+    def test_recomputes_when_file_was_overwritten(self):
+        self._get("# A\nold body", [0.1] * 3072)
+        new_vec = [0.9] * 3072
+        result, calls = self._get("# A\nnew body", new_vec)
+        self.assertEqual(result, new_vec)
+        self.assertEqual(calls, 1)
+
+    def test_does_not_cache_zero_vector_fallback(self):
+        self._get("# A\nbody", [0.0] * 3072)
+        vec = [0.1] * 3072
+        result, calls = self._get("# A\nbody", vec)
+        self.assertEqual(result, vec)
+        self.assertEqual(calls, 1)
+
+    def test_legacy_cache_without_hash_is_recomputed(self):
+        import json
+        import os
+
+        os.makedirs(os.path.join(self.kb_dir, ".embeddings"))
+        with open(os.path.join(self.kb_dir, ".embeddings", "article.json"), "w") as f:
+            json.dump({"filename": "article.md", "embedding": [0.1] * 3072}, f)
+        vec = [0.9] * 3072
+        result, calls = self._get("# A\nbody", vec)
+        self.assertEqual(result, vec)
+        self.assertEqual(calls, 1)
