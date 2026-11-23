@@ -297,3 +297,110 @@ class TestDocumentEmbeddingCache(unittest.TestCase):
         result, calls = self._get("# A\nbody", vec)
         self.assertEqual(result, vec)
         self.assertEqual(calls, 1)
+
+
+class TestArticleIdentity(unittest.TestCase):
+    def test_colliding_slugs_get_distinct_filenames(self):
+        from app.tools import _article_filename
+
+        a = _article_filename("C++ vs. C#", "https://a.example/1")
+        b = _article_filename("C vs C", "https://a.example/2")
+        self.assertNotEqual(a, b)
+        self.assertTrue(a.startswith("c-vs-c-") and a.endswith(".md"))
+
+    def test_filename_is_stable_per_url(self):
+        from app.tools import _article_filename
+
+        self.assertEqual(
+            _article_filename("Title", "https://a.example/1"),
+            _article_filename("Title", "https://a.example/1"),
+        )
+
+    def test_empty_and_long_slugs(self):
+        from app.tools import MAX_SLUG_LENGTH, _article_filename
+
+        self.assertTrue(_article_filename("日本語", "https://x/1").startswith("article-"))
+        long_name = _article_filename("word " * 100, "https://x/2")
+        self.assertLessEqual(len(long_name), MAX_SLUG_LENGTH + len("-0123456789.md"))
+
+    def test_scan_filters_saved_articles_by_url(self):
+        import json
+        import os
+        import tempfile
+
+        from app import tools
+
+        feed = b"""<rss><channel>
+            <item><title>C vs C</title><link>https://b.example/new</link></item>
+            <item><title>Old</title><link>https://b.example/old</link></item>
+        </channel></rss>"""
+        with tempfile.TemporaryDirectory() as tmp:
+            kb_dir = os.path.join(tmp, "kb")
+            config_path = os.path.join(tmp, "config.json")
+            with open(config_path, "w") as f:
+                json.dump(
+                    {"knowledge_base_dir": kb_dir,
+                     "blogs": [{"name": "B", "url": "https://b.example/feed"}]},
+                    f,
+                )
+            with mock.patch.object(tools, "CONFIG_PATH", config_path):
+                # Saved article whose title slug collides with "C vs C".
+                tools.save_to_repository(
+                    "C++ vs. C#", "https://b.example/other", "x", [], None
+                )
+                tools.save_to_repository("Old", "https://b.example/old", "x", [], None)
+                with mock.patch.object(tools, "_fetch_url", return_value=feed):
+                    result = tools.scrape_blog_feeds(None)
+            urls = [a["url"] for a in result["new_articles"]]
+            self.assertEqual(urls, ["https://b.example/new"])
+
+
+class TestExclusions(unittest.TestCase):
+    def setUp(self):
+        import os
+        import tempfile
+
+        from app import fast_api_app
+
+        self._tmp = tempfile.TemporaryDirectory()
+        self.path = os.path.join(self._tmp.name, "excluded.json")
+        self._patch = mock.patch.object(fast_api_app, "EXCLUDED_PATH", self.path)
+        self._patch.start()
+        self.api = fast_api_app
+
+    def tearDown(self):
+        self._patch.stop()
+        self._tmp.cleanup()
+
+    def test_concurrent_excludes_are_not_lost(self):
+        import threading
+
+        urls = [f"https://x.example/{i}" for i in range(50)]
+        threads = [
+            threading.Thread(target=self.api.exclude_article, args=({"url": u},))
+            for u in urls
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(sorted(self.api._load_excluded()), sorted(urls))
+
+    def test_legacy_slug_entries_still_exclude(self):
+        import json
+
+        with open(self.path, "w") as f:
+            json.dump(["c-vs-c"], f)
+        excluded = set(self.api._load_excluded())
+        self.assertTrue(
+            self.api._is_excluded({"title": "C vs C", "url": "https://x/1"}, excluded)
+        )
+        self.assertFalse(
+            self.api._is_excluded({"title": "Other", "url": "https://x/2"}, excluded)
+        )
+
+    def test_exclude_requires_url(self):
+        from fastapi import HTTPException
+
+        with self.assertRaises(HTTPException):
+            self.api.exclude_article({"title": "only a title"})

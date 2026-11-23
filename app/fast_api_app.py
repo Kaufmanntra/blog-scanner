@@ -29,6 +29,7 @@ from app.app_utils.telemetry import setup_telemetry
 from app.app_utils.typing import Feedback
 from app.tools import (
     CONFIG_PATH,
+    SOURCE_URL_RE,
     _cosine_similarity,
     _extract_feed_items,
     _feed_title,
@@ -118,10 +119,21 @@ def get_blogs() -> dict:
     return {"blogs": config.get("blogs", []), "project_id": project_id}
 
 
-# Serialises read-modify-write cycles on config.json across request threads.
+# Serialise read-modify-write cycles on these files across request threads.
 _config_lock = threading.Lock()
+_excluded_lock = threading.Lock()
 MAX_BLOG_NAME_LENGTH = 100
 MAX_BLOG_URL_LENGTH = 2048
+EXCLUDED_PATH = "excluded.json"
+
+
+def _write_json_atomic(path: str, data: object) -> None:
+    """Atomically replace a JSON file so a crash can't leave it half-written."""
+    tmp_path = f"{path}.tmp"
+    with open(tmp_path, "w") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+    os.replace(tmp_path, path)
 
 
 def _load_config() -> dict:
@@ -132,12 +144,25 @@ def _load_config() -> dict:
 
 
 def _write_config(config: dict) -> None:
-    """Atomically replace config.json so a crash can't leave it half-written."""
-    tmp_path = f"{CONFIG_PATH}.tmp"
-    with open(tmp_path, "w") as f:
-        json.dump(config, f, indent=2, ensure_ascii=False)
-        f.write("\n")
-    os.replace(tmp_path, CONFIG_PATH)
+    _write_json_atomic(CONFIG_PATH, config)
+
+
+def _load_excluded() -> list[str]:
+    """Excluded articles: URLs, plus title slugs written by older versions."""
+    if not os.path.exists(EXCLUDED_PATH):
+        return []
+    try:
+        with open(EXCLUDED_PATH) as f:
+            data = json.load(f)
+    except Exception as e:
+        logger.log_text(f"Could not read {EXCLUDED_PATH}: {e}", severity="WARNING")
+        return []
+    return [x for x in data if isinstance(x, str)] if isinstance(data, list) else []
+
+
+def _is_excluded(article: dict, excluded: set[str]) -> bool:
+    # Legacy entries are title slugs; new entries are article URLs.
+    return article["url"] in excluded or _slugify(article["title"]) in excluded
 
 
 @app.post("/api/blogs")
@@ -216,21 +241,13 @@ def scan_articles() -> dict:
     scrape_result = scrape_blog_feeds(None)
     new_articles = scrape_result.get("new_articles", [])
 
-    # Load persistent exclusions
-    excluded_path = "excluded.json"
-    excluded_slugs = set()
-    if os.path.exists(excluded_path):
-        try:
-            with open(excluded_path) as f:
-                excluded_slugs = set(json.load(f))
-        except Exception:
-            pass
+    with _excluded_lock:
+        excluded = set(_load_excluded())
 
     # Filter out excluded items and generate short summaries
     filtered_articles = []
     for art in new_articles:
-        slug = _slugify(art["title"])
-        if slug not in excluded_slugs:
+        if not _is_excluded(art, excluded):
             art["short_summary"] = _generate_short_summary(art["title"], art["summary"])
             filtered_articles.append(art)
 
@@ -286,28 +303,20 @@ def include_article(payload: dict) -> dict:
 
 @app.post("/api/exclude")
 def exclude_article(payload: dict) -> dict:
-    """Adds the article to excluded.json so it will not appear in future scans."""
-    title = payload.get("title", "")
-    if not title:
-        raise HTTPException(status_code=400, detail="Title is required")
+    """Adds the article's URL to excluded.json so it won't appear in future scans."""
+    url = str(payload.get("url", "")).strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="URL is required")
+    if len(url) > MAX_BLOG_URL_LENGTH:
+        raise HTTPException(status_code=400, detail="URL is too long")
 
-    slug = _slugify(title)
-    excluded_path = "excluded.json"
-    excluded_slugs = []
+    with _excluded_lock:
+        excluded = _load_excluded()
+        if url not in excluded:
+            excluded.append(url)
+            _write_json_atomic(EXCLUDED_PATH, excluded)
 
-    if os.path.exists(excluded_path):
-        try:
-            with open(excluded_path) as f:
-                excluded_slugs = json.load(f)
-        except Exception:
-            pass
-
-    if slug not in excluded_slugs:
-        excluded_slugs.append(slug)
-        with open(excluded_path, "w") as f:
-            json.dump(excluded_slugs, f, indent=2)
-
-    return {"status": "success", "slug": slug}
+    return {"status": "success", "url": url}
 
 
 @app.post("/api/query")
@@ -440,7 +449,7 @@ def _parse_article_metadata(filepath: str, filename: str) -> dict:
             title = filename
 
         # Parse original URL
-        url_match = re.search(r"\*\*Source URL\*\*: \[Link\]\(([^)]+)\)", content)
+        url_match = SOURCE_URL_RE.search(content)
         if url_match:
             url = url_match.group(1).strip()
 

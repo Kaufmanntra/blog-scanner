@@ -282,6 +282,42 @@ def _slugify(text: str) -> str:
     return text
 
 
+MAX_SLUG_LENGTH = 80
+
+# Line written by save_to_repository; also the source of truth for which
+# article (by URL) a knowledge base file belongs to.
+SOURCE_URL_RE = re.compile(r"\*\*Source URL\*\*: \[Link\]\(([^)]+)\)")
+
+
+def _article_filename(title: str, url: str) -> str:
+    """Knowledge base filename for an article: readable slug + URL hash.
+
+    The slug alone is not unique ("C++ vs. C#" and "C vs C" both become
+    "c-vs-c", non-Latin titles become empty), so the article's URL — its
+    actual identity — is hashed into the name.
+    """
+    slug = _slugify(title)[:MAX_SLUG_LENGTH].strip("-") or "article"
+    url_hash = hashlib.sha256(url.strip().encode("utf-8")).hexdigest()[:10]
+    return f"{slug}-{url_hash}.md"
+
+
+def _saved_source_urls(kb_dir: str) -> set[str]:
+    """Return the source URLs of all articles saved in the knowledge base."""
+    urls = set()
+    for filename in os.listdir(kb_dir):
+        if not filename.endswith(".md"):
+            continue
+        try:
+            with open(os.path.join(kb_dir, filename)) as f:
+                match = SOURCE_URL_RE.search(f.read())
+        except Exception as e:
+            print(f"Error reading {filename}: {e}")
+            continue
+        if match:
+            urls.add(match.group(1).strip())
+    return urls
+
+
 def _get_embedding(client: genai.Client, text: str) -> list[float]:
     """Helper to fetch embeddings using gemini-embedding-2."""
     try:
@@ -364,7 +400,7 @@ def scrape_blog_feeds(tool_context: ToolContext) -> dict:
     """Scrapes the configured tech blogs and returns new (unsummarized) articles.
 
     Checks the config.json for the blogs to scan, fetches their feeds, and filters
-    out articles that already have matching markdown files in the knowledge base.
+    out articles whose URL is already saved in the knowledge base.
 
     Returns:
         dict: A dict containing a list of 'new_articles' (up to 3 per blog).
@@ -379,11 +415,7 @@ def scrape_blog_feeds(tool_context: ToolContext) -> dict:
     kb_dir = config.get("knowledge_base_dir", KNOWLEDGE_BASE_DIR)
     os.makedirs(kb_dir, exist_ok=True)
 
-    # Get list of existing slugs in the knowledge base
-    existing_files = os.listdir(kb_dir)
-    existing_slugs = {
-        os.path.splitext(f)[0] for f in existing_files if f.endswith(".md")
-    }
+    saved_urls = _saved_source_urls(kb_dir)
 
     new_articles = []
 
@@ -405,8 +437,7 @@ def scrape_blog_feeds(tool_context: ToolContext) -> dict:
             # Process up to 3 latest new articles from this feed
             count = 0
             for item in items_found:
-                slug = _slugify(item["title"])
-                if slug not in existing_slugs:
+                if item["url"] not in saved_urls:
                     new_articles.append(
                         {
                             "blog_name": blog_name,
@@ -531,8 +562,7 @@ def save_to_repository(
             kb_dir = config.get("knowledge_base_dir", KNOWLEDGE_BASE_DIR)
 
     os.makedirs(kb_dir, exist_ok=True)
-    slug = _slugify(title)
-    filename = f"{slug}.md"
+    filename = _article_filename(title, url)
     filepath = os.path.join(kb_dir, filename)
 
     # Build markdown contents

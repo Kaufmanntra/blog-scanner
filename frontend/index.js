@@ -355,7 +355,7 @@ document.addEventListener("DOMContentLoaded", () => {
             const res = await fetch("/api/exclude", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ title: article.title })
+                body: JSON.stringify({ url: article.url })
             });
             const data = await res.json();
 
