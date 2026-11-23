@@ -59,6 +59,11 @@ blog-scanner-agent/
 └── pyproject.toml        # Project dependencies (managed via uv)
 ```
 
+> **Config location:** `config.json` is read from the working directory by default.
+> Set `BLOG_SCANNER_CONFIG` (e.g. `/code/data/config.json`) to keep it on a mounted
+> volume so sources added in the dashboard survive container rebuilds. If that file
+> doesn't exist yet, it is seeded from the bundled `config.json` on startup.
+
 ---
 
 ## Getting Started

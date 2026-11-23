@@ -17,6 +17,7 @@ import json
 import math
 import os
 import re
+import shutil
 import socket
 import urllib.error
 import urllib.request
@@ -27,6 +28,23 @@ from urllib.parse import urljoin, urlparse
 
 from google import genai
 from google.adk.tools import ToolContext
+
+# Path to the sources config. Set BLOG_SCANNER_CONFIG to keep it on a mounted
+# volume (e.g. /code/data/config.json) so sources added in the dashboard
+# survive container rebuilds. The bundled config.json seeds it on first start.
+DEFAULT_CONFIG_PATH = "config.json"
+CONFIG_PATH = os.environ.get("BLOG_SCANNER_CONFIG", DEFAULT_CONFIG_PATH)
+
+
+def ensure_config() -> None:
+    """Seeds CONFIG_PATH from the bundled config.json if it doesn't exist yet."""
+    if os.path.exists(CONFIG_PATH) or not os.path.exists(DEFAULT_CONFIG_PATH):
+        return
+    config_dir = os.path.dirname(CONFIG_PATH)
+    if config_dir:
+        os.makedirs(config_dir, exist_ok=True)
+    shutil.copyfile(DEFAULT_CONFIG_PATH, CONFIG_PATH)
+
 
 # Directory where similar articles are stored
 KNOWLEDGE_BASE_DIR = "knowledge_base"
@@ -328,7 +346,7 @@ def scrape_blog_feeds(tool_context: ToolContext) -> dict:
     Returns:
         dict: A dict containing a list of 'new_articles' (up to 3 per blog).
     """
-    config_path = "config.json"
+    config_path = CONFIG_PATH
     if not os.path.exists(config_path):
         return {"error": "config.json not found", "new_articles": []}
 
@@ -396,7 +414,7 @@ def search_similar_articles(
     Returns:
         dict: A dict containing a list of 'similar_articles' (top 3 most similar).
     """
-    config_path = "config.json"
+    config_path = CONFIG_PATH
     kb_dir = KNOWLEDGE_BASE_DIR
     if os.path.exists(config_path):
         with open(config_path) as f:
@@ -482,7 +500,7 @@ def save_to_repository(
     Returns:
         dict: A dict containing the 'status' and the saved 'file_path'.
     """
-    config_path = "config.json"
+    config_path = CONFIG_PATH
     kb_dir = KNOWLEDGE_BASE_DIR
     if os.path.exists(config_path):
         with open(config_path) as f:

@@ -28,6 +28,7 @@ from google.cloud import logging as google_cloud_logging
 from app.app_utils.telemetry import setup_telemetry
 from app.app_utils.typing import Feedback
 from app.tools import (
+    CONFIG_PATH,
     _cosine_similarity,
     _extract_feed_items,
     _feed_title,
@@ -35,6 +36,7 @@ from app.tools import (
     _get_embedding,
     _slugify,
     discover_feed,
+    ensure_config,
     save_to_repository,
     scrape_blog_feeds,
     search_similar_articles,
@@ -52,7 +54,7 @@ allow_origins = (
 logs_bucket_name = os.environ.get("LOGS_BUCKET_NAME")
 
 AGENT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CONFIG_PATH = "config.json"
+ensure_config()
 # In-memory session configuration - no persistent storage
 session_service_uri = None
 
@@ -108,7 +110,7 @@ def get_dashboard() -> FileResponse:
 @app.get("/api/blogs")
 def get_blogs() -> dict:
     """Returns the list of configured blogs."""
-    config_path = "config.json"
+    config_path = CONFIG_PATH
     if not os.path.exists(config_path):
         return {"blogs": []}
     with open(config_path) as f:
@@ -315,7 +317,7 @@ def query_knowledge_base(payload: dict) -> dict:
     if not query:
         raise HTTPException(status_code=400, detail="Query is required")
 
-    config_path = "config.json"
+    config_path = CONFIG_PATH
     kb_dir = "knowledge_base"
     if os.path.exists(config_path):
         try:
@@ -456,7 +458,7 @@ def _parse_article_metadata(filepath: str, filename: str) -> dict:
 @app.get("/api/articles")
 def get_articles() -> dict:
     """Returns the list of articles currently saved in the knowledge repository."""
-    config_path = "config.json"
+    config_path = CONFIG_PATH
     kb_dir = "knowledge_base"
     if os.path.exists(config_path):
         try:
@@ -486,7 +488,7 @@ def delete_article(filename: str) -> dict:
     if "/" in filename or "\\" in filename or not filename.endswith(".md"):
         raise HTTPException(status_code=400, detail="Invalid filename")
 
-    config_path = "config.json"
+    config_path = CONFIG_PATH
     kb_dir = "knowledge_base"
     if os.path.exists(config_path):
         try:

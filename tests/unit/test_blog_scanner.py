@@ -202,3 +202,45 @@ class TestFeedDiscovery(unittest.TestCase):
     def test_fetch_rejects_unsafe_url(self) -> None:
         with self.assertRaises(ValueError):
             _fetch_url("http://127.0.0.1/feed")
+
+
+class TestEnsureConfig(unittest.TestCase):
+    def test_seeds_missing_config_from_bundled_default(self):
+        import os
+        import tempfile
+
+        from app import tools
+
+        with tempfile.TemporaryDirectory() as tmp:
+            default = os.path.join(tmp, "config.json")
+            target = os.path.join(tmp, "data", "config.json")
+            with open(default, "w") as f:
+                f.write('{"blogs": []}\n')
+            with (
+                mock.patch.object(tools, "DEFAULT_CONFIG_PATH", default),
+                mock.patch.object(tools, "CONFIG_PATH", target),
+            ):
+                tools.ensure_config()
+            with open(target) as f:
+                self.assertEqual(f.read(), '{"blogs": []}\n')
+
+    def test_keeps_existing_config(self):
+        import os
+        import tempfile
+
+        from app import tools
+
+        with tempfile.TemporaryDirectory() as tmp:
+            default = os.path.join(tmp, "config.json")
+            target = os.path.join(tmp, "custom.json")
+            with open(default, "w") as f:
+                f.write("default")
+            with open(target, "w") as f:
+                f.write("custom")
+            with (
+                mock.patch.object(tools, "DEFAULT_CONFIG_PATH", default),
+                mock.patch.object(tools, "CONFIG_PATH", target),
+            ):
+                tools.ensure_config()
+            with open(target) as f:
+                self.assertEqual(f.read(), "custom")
