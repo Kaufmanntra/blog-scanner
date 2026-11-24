@@ -108,6 +108,40 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     }
 
+    function basename(path) {
+        return String(path || "").split("/").pop();
+    }
+
+    // Reset cards marked "saved" whose file no longer exists in the repository
+    // (deleted in the Saved tab, another browser tab, or on the server), so
+    // they offer "Include" again instead of linking to a missing file.
+    function reconcileScan(isStillSaved) {
+        let changed = false;
+        scanEntries.forEach(entry => {
+            if (entry.saved && !isStillSaved(basename(entry.saved.file_path))) {
+                entry.saved = null;
+                changed = true;
+            }
+        });
+        if (changed) {
+            persistScan();
+            renderArticles();
+        }
+    }
+
+    async function reconcileScanWithRepository() {
+        if (!scanEntries.some(entry => entry.saved)) return;
+        try {
+            const res = await fetch("/api/articles");
+            if (!res.ok) return;
+            const data = await res.json();
+            const filenames = new Set((data.articles || []).map(a => a.filename));
+            reconcileScan(name => filenames.has(name));
+        } catch (error) {
+            console.warn("Could not reconcile scan results:", error);
+        }
+    }
+
     // Initialize Page
     async function init() {
         try {
@@ -559,6 +593,9 @@ document.addEventListener("DOMContentLoaded", () => {
             const res = await fetch("/api/articles");
             const data = await res.json();
 
+            const filenames = new Set((data.articles || []).map(a => a.filename));
+            reconcileScan(name => filenames.has(name));
+
             if (data.articles && data.articles.length > 0) {
                 renderSavedArticles(data.articles);
                 savedArticlesGrid.classList.remove("hidden");
@@ -652,6 +689,7 @@ document.addEventListener("DOMContentLoaded", () => {
             const data = await res.json();
 
             if (data.status === "success") {
+                reconcileScan(name => name !== article.filename);
                 card.classList.add("removed");
                 setTimeout(() => {
                     card.remove();
@@ -672,5 +710,6 @@ document.addEventListener("DOMContentLoaded", () => {
 
     // Run Initialization
     restoreScan();
+    reconcileScanWithRepository();
     init();
 });
