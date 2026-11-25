@@ -63,6 +63,11 @@ blog-scanner-agent/
 > Set `BLOG_SCANNER_CONFIG` (e.g. `/code/data/config.json`) to keep it on a mounted
 > volume so sources added in the dashboard survive container rebuilds. If that file
 > doesn't exist yet, it is seeded from the bundled `config.json` on startup.
+>
+> Excluded articles live in `excluded.json` in the working directory. Set
+> `BLOG_SCANNER_EXCLUDED` (e.g. `/code/data/excluded.json`) to keep them on a mounted
+> volume. Mount the directory, not the file: writes replace the file atomically,
+> which fails on a single-file bind mount.
 
 ---
 

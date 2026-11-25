@@ -124,7 +124,10 @@ _config_lock = threading.Lock()
 _excluded_lock = threading.Lock()
 MAX_BLOG_NAME_LENGTH = 100
 MAX_BLOG_URL_LENGTH = 2048
-EXCLUDED_PATH = "excluded.json"
+# Like BLOG_SCANNER_CONFIG: point this into a mounted *directory* to persist it.
+# Don't bind-mount the file itself; atomic writes replace it via rename, which
+# fails on a single-file bind mount (EBUSY).
+EXCLUDED_PATH = os.environ.get("BLOG_SCANNER_EXCLUDED", "excluded.json")
 
 
 def _write_json_atomic(path: str, data: object) -> None:
