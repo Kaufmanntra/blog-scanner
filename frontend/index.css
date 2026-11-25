@@ -550,6 +550,15 @@ code {
     line-height: 1.6;
 }
 
+.card-body a {
+    color: #a5b4fc;
+    overflow-wrap: anywhere;
+}
+
+a.btn {
+    text-decoration: none;
+}
+
 .card-footer {
     display: flex;
     justify-content: flex-end;
@@ -709,4 +718,260 @@ code {
 .chat-input-bar input:focus {
     border-color: var(--color-primary);
     box-shadow: 0 0 0 1px var(--color-primary);
+}
+
+/* ------------------------------------------------------------------ */
+/* Mobile layout: bottom tab bar, sidebar becomes the "Sources" tab    */
+/* ------------------------------------------------------------------ */
+
+/* Mobile-only elements are hidden on desktop. */
+.mobile-tabbar,
+.sidebar-mobile-header {
+    display: none;
+}
+
+@media (max-width: 768px) {
+    :root {
+        --tabbar-height: 60px;
+        --gutter-left: max(16px, env(safe-area-inset-left, 0px));
+        --gutter-right: max(16px, env(safe-area-inset-right, 0px));
+        --page-top: calc(16px + env(safe-area-inset-top, 0px));
+        --page-bottom: calc(var(--tabbar-height) + env(safe-area-inset-bottom, 0px) + 16px);
+    }
+
+    /* Let the page scroll normally instead of a fixed 100vh app shell. */
+    body {
+        height: auto;
+        min-height: 100dvh;
+        overflow: visible;
+    }
+
+    .dashboard-container {
+        display: block;
+        height: auto;
+    }
+
+    .main-content {
+        overflow: visible;
+        padding: var(--page-top) var(--gutter-right) var(--page-bottom) var(--gutter-left);
+    }
+
+    /* Sidebar: hidden, except as the full-screen "Sources" tab. */
+    .sidebar {
+        display: none;
+        width: auto;
+        border-right: none;
+        background-color: var(--bg-dark);
+        padding: var(--page-top) var(--gutter-right) var(--page-bottom) var(--gutter-left);
+    }
+
+    body[data-view="sources"] .sidebar {
+        display: flex;
+    }
+
+    body[data-view="sources"] .main-content {
+        display: none;
+    }
+
+    .sidebar-header,
+    .sidebar-nav {
+        display: none;
+    }
+
+    .sidebar-mobile-header {
+        display: flex;
+    }
+
+    .sidebar-section {
+        margin-bottom: 24px;
+    }
+
+    .sidebar-footer {
+        margin-top: 8px;
+    }
+
+    /* Headers stack; the primary action spans the full width. */
+    .main-header {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 16px;
+        margin-bottom: 20px;
+    }
+
+    .main-header h1 {
+        font-size: 1.5rem;
+    }
+
+    .subtitle {
+        font-size: 0.9rem;
+    }
+
+    #btn-scan {
+        width: 100%;
+    }
+
+    /* Touch targets of at least 44px. */
+    .btn {
+        min-height: 44px;
+    }
+
+    .blog-item {
+        min-height: 44px;
+        padding: 0 0 0 12px;
+        background-color: var(--bg-card);
+        border-color: var(--bg-border);
+        color: var(--text-primary);
+    }
+
+    .btn-remove-source {
+        width: 44px;
+        height: 44px;
+        font-size: 1.3rem;
+    }
+
+    /* 16px inputs keep iOS from zooming in on focus. */
+    .add-source-form input,
+    .chat-input-bar input {
+        font-size: 16px;
+        min-height: 44px;
+    }
+
+    .add-source-form .btn {
+        width: 100%;
+    }
+
+    /* Cards */
+    .article-card {
+        padding: 16px;
+        gap: 12px;
+    }
+
+    .article-card h2 {
+        font-size: 1.1rem;
+        margin-top: 0;
+        overflow-wrap: anywhere;
+    }
+
+    .card-body p {
+        font-size: 0.9rem;
+    }
+
+    .card-footer {
+        gap: 10px;
+        padding-top: 12px;
+    }
+
+    .card-footer > .btn {
+        flex: 1;
+    }
+
+    .save-success-info {
+        overflow-wrap: anywhere;
+    }
+
+    .empty-state {
+        height: auto;
+        padding: 40px 20px;
+    }
+
+    .empty-icon {
+        width: 48px;
+        height: 48px;
+    }
+
+    .articles-grid {
+        gap: 14px;
+        padding-bottom: 0;
+    }
+
+    /* Ask: the chat fills the screen between header and tab bar. */
+    #panel-qa {
+        height: calc(100dvh - var(--page-top) - var(--page-bottom));
+        min-height: 360px;
+    }
+
+    .qa-chat-container {
+        flex: 1;
+        height: auto;
+        max-height: none;
+        min-height: 0;
+    }
+
+    .chat-feed {
+        padding: 16px;
+        gap: 14px;
+    }
+
+    .chat-bubble {
+        max-width: 90%;
+        overflow-wrap: anywhere;
+    }
+
+    .chat-input-bar {
+        padding: 12px;
+        gap: 8px;
+    }
+
+    /* Bottom tab bar */
+    .mobile-tabbar {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        position: fixed;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        z-index: 20;
+        background-color: #0c0c0e;
+        border-top: 1px solid var(--bg-border);
+        padding: 0 env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
+    }
+
+    .mobile-tab {
+        height: var(--tabbar-height);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 4px;
+        background: none;
+        border: none;
+        color: var(--text-muted);
+        font-family: var(--font-sans);
+        font-size: 0.7rem;
+        font-weight: 500;
+        cursor: pointer;
+        -webkit-tap-highlight-color: transparent;
+    }
+
+    .mobile-tab .icon {
+        width: 20px;
+        height: 20px;
+    }
+
+    .mobile-tab.active {
+        color: var(--text-primary);
+    }
+
+    .mobile-tab.active .icon {
+        color: var(--color-primary);
+    }
+
+    .mobile-tab:focus-visible {
+        outline: 2px solid var(--color-primary);
+        outline-offset: -4px;
+        border-radius: var(--radius-md);
+    }
+}
+
+/* Touch devices have no hover: show the remove button and skip hover lift. */
+@media (hover: none) {
+    .btn-remove-source {
+        opacity: 1;
+    }
+
+    .article-card:hover {
+        transform: none;
+        box-shadow: none;
+        border-color: var(--bg-border);
+    }
 }

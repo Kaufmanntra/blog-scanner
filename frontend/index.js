@@ -23,9 +23,6 @@ function createLink(href, text, { external = false } = {}) {
 
 document.addEventListener("DOMContentLoaded", () => {
     // Tab Elements
-    const tabBtnScanner = document.getElementById("tab-btn-scanner");
-    const tabBtnQa = document.getElementById("tab-btn-qa");
-    const tabBtnSaved = document.getElementById("tab-btn-saved");
     const panelScanner = document.getElementById("panel-scanner");
     const panelQa = document.getElementById("panel-qa");
     const panelSaved = document.getElementById("panel-saved");
@@ -48,34 +45,44 @@ document.addEventListener("DOMContentLoaded", () => {
     const savedEmptyState = document.getElementById("saved-empty-state");
     const savedArticlesGrid = document.getElementById("saved-articles-grid");
 
-    // Tab Navigation Switch
-    tabBtnScanner.addEventListener("click", () => {
-        tabBtnScanner.classList.add("active");
-        tabBtnQa.classList.remove("active");
-        tabBtnSaved.classList.remove("active");
-        panelScanner.classList.remove("hidden");
-        panelQa.classList.add("hidden");
-        panelSaved.classList.add("hidden");
-    });
+    // Tab Navigation
+    // Views: "scanner", "qa", "saved" are main panels; "sources" exists only on
+    // mobile, where CSS shows the sidebar as a full screen (body[data-view]).
+    // The desktop sidebar keeps highlighting the last main panel.
+    const mainPanels = { scanner: panelScanner, qa: panelQa, saved: panelSaved };
+    const viewButtons = document.querySelectorAll("[data-view]:not(body)");
+    const canHover = window.matchMedia("(hover: hover)");
+    let mainView = "scanner";
 
-    tabBtnQa.addEventListener("click", () => {
-        tabBtnQa.classList.add("active");
-        tabBtnScanner.classList.remove("active");
-        tabBtnSaved.classList.remove("active");
-        panelQa.classList.remove("hidden");
-        panelScanner.classList.add("hidden");
-        panelSaved.classList.add("hidden");
-        chatInput.focus();
-    });
+    function showView(view) {
+        document.body.dataset.view = view;
+        if (mainPanels[view]) {
+            mainView = view;
+            Object.entries(mainPanels).forEach(([name, panel]) => {
+                panel.classList.toggle("hidden", name !== view);
+            });
+        }
 
-    tabBtnSaved.addEventListener("click", () => {
-        tabBtnSaved.classList.add("active");
-        tabBtnScanner.classList.remove("active");
-        tabBtnQa.classList.remove("active");
-        panelSaved.classList.remove("hidden");
-        panelScanner.classList.add("hidden");
-        panelQa.classList.add("hidden");
-        loadSavedArticles();
+        viewButtons.forEach(btn => {
+            const isMobileTab = btn.classList.contains("mobile-tab");
+            const active = btn.dataset.view === (isMobileTab ? view : mainView);
+            btn.classList.toggle("active", active);
+            if (isMobileTab) {
+                if (active) btn.setAttribute("aria-current", "page");
+                else btn.removeAttribute("aria-current");
+            }
+        });
+
+        // On mobile the whole page scrolls; start each tab at the top.
+        window.scrollTo(0, 0);
+
+        if (view === "saved") loadSavedArticles();
+        // Don't pop up the on-screen keyboard on touch devices.
+        if (view === "qa" && canHover.matches) chatInput.focus();
+    }
+
+    viewButtons.forEach(btn => {
+        btn.addEventListener("click", () => showView(btn.dataset.view));
     });
 
     // Scan results persistence (survives page reloads within the browser tab).
